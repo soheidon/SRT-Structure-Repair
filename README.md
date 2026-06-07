@@ -38,29 +38,6 @@ DeepLなどで翻訳したSRT字幕ファイルは、翻訳自体は良好でも
 
 [Releases](https://github.com/soheidon/SRT-Structure-Repair/releases) から `.msi` インストーラーをダウンロードしてください。
 
-## ビルド方法
-
-### 前提
-
-- [Rust](https://www.rust-lang.org/tools/install)
-- [Node.js](https://nodejs.org/) 18+
-- [Tauri CLI](https://v2.tauri.app/)
-
-### 手順
-
-```bash
-npm install
-npm run tauri build
-```
-
-ビルド成果物は `src-tauri/target/release/bundle/` に生成されます。
-
-### 開発
-
-```bash
-npm run tauri dev
-```
-
 ## 使い方
 
 1. 「元の英語SRTファイル」を選択
