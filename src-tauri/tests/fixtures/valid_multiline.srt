@@ -1,0 +1,11 @@
+1
+00:00:01,000 --> 00:00:03,000
+Line one of the subtitle.
+Line two of the subtitle.
+
+2
+00:00:04,000 --> 00:00:06,000
+Another subtitle
+with multiple
+lines of text.
+
