@@ -754,21 +754,21 @@ export default function ReviewPanel({
 
         {/* Save section */}
         <div className="review-save-section">
-          <p className="save-info-text">
-            採用されたAI翻訳だけを反映し、元のSRTは変更せずに新しいSRTファイルを作成します。
-          </p>
           <div className="review-save-row">
             <button
               className="repair-button"
               disabled={acceptedCues.length === 0}
               onClick={handleSave}
             >
-              選択した字幕を新しいSRTに保存
+              保存
             </button>
             <button className="link-btn" onClick={handleChangeFolder}>
-              保存先フォルダを変更
+              フォルダ変更
             </button>
           </div>
+          <p className="save-info-text">
+            採用されたAI翻訳だけを反映し、元のSRTは変更せずに新しいSRTファイルを作成します。
+          </p>
         </div>
 
         {/* Post-save success */}
