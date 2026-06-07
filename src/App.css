@@ -18,6 +18,11 @@ body {
   min-height: 100vh;
 }
 
+.app--wide {
+  max-width: none;
+  padding: 24px 32px;
+}
+
 /* Header */
 .app-header {
   margin-bottom: 32px;
@@ -1724,13 +1729,24 @@ body {
   background: #f9fafb;
   border-radius: 6px;
   padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.save-info-text {
+  font-size: 12px;
+  color: #666;
+  margin: 0;
+  flex: 1;
+  min-width: 300px;
 }
 
 .review-save-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 8px;
 }
 
 /* ── Table ═════════════════════════════════════════════ */
@@ -1738,14 +1754,16 @@ body {
 .review-table-wrapper {
   max-height: 500px;
   overflow-y: auto;
+  overflow-x: auto;
   position: relative;
 }
 
 .review-table {
+  min-width: 1500px;
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .review-table thead {
@@ -1763,29 +1781,42 @@ body {
   padding: 8px 6px;
   border-bottom: 2px solid #ddd;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .review-table td {
-  padding: 6px 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: top;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Column widths */
-.review-table .col-id { width: 36px; }
-.review-table .col-start { width: 80px; font-family: "Consolas", monospace; font-size: 11px; }
-.review-table .col-end { width: 80px; font-family: "Consolas", monospace; font-size: 11px; }
-.review-table .col-duration { width: 60px; font-family: "Consolas", monospace; font-size: 11px; color: #888; }
-.review-table .col-source { width: 120px; }
-.review-table .col-current { width: 110px; }
-.review-table .col-ai { width: 110px; color: #0078d4; }
-.review-table .col-conf { width: 44px; text-align: center; }
-.review-table .col-status { width: 76px; }
-.review-table .col-note { width: 90px; font-size: 11px; color: #888; }
-.review-table .col-accept { width: 42px; text-align: center; }
-.review-table .col-actions { width: 80px; }
+.review-table .col-id { width: 50px; text-align: center; }
+.review-table .col-start { width: 110px; font-family: "Consolas", monospace; font-size: 11px; white-space: nowrap; }
+.review-table .col-end { width: 110px; font-family: "Consolas", monospace; font-size: 11px; white-space: nowrap; }
+.review-table .col-duration { width: 80px; font-family: "Consolas", monospace; font-size: 11px; color: #888; white-space: nowrap; }
+.review-table .col-source { min-width: 260px; }
+.review-table .col-current { min-width: 220px; }
+.review-table .col-ai { min-width: 260px; color: #0078d4; }
+.review-table .col-conf { width: 70px; text-align: center; white-space: nowrap; }
+.review-table .col-status { width: 90px; white-space: nowrap; }
+.review-table .col-note { min-width: 220px; font-size: 11px; color: #888; }
+.review-table .col-accept { width: 70px; text-align: center; }
+.review-table .col-actions { width: 120px; }
+
+/* Text wrapping for content columns (clamped to 3 lines) */
+.review-table .col-source,
+.review-table .col-current,
+.review-table .col-ai,
+.review-table .col-note {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 /* Row colors */
 .review-table tbody tr {
@@ -1985,7 +2016,7 @@ body {
 }
 
 /* ── Responsive detail pane ──────────────────────────── */
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .detail-grid {
     grid-template-columns: 1fr;
   }

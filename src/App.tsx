@@ -173,7 +173,7 @@ export default function App() {
 
   // ── Render ───────────────────────────────────────────────────────────
   return (
-    <div className="app">
+    <div className={`app${summary ? " app--wide" : ""}`}>
       <header className="app-header">
         <div className="header-top">
           <div className="header-title">

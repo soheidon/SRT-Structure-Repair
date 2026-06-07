@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "SRT Repair Tool",
-        "width": 800,
-        "height": 700,
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1200,
+        "minHeight": 760,
         "resizable": true,
         "fullscreen": false,
         "dragDropEnabled": false
