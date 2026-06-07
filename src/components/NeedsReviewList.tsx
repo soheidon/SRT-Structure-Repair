@@ -136,19 +136,26 @@ export default function NeedsReviewList({ cues, repairedCues, onRetrySuccess }: 
               </div>
 
               <div className="review-body">
-                <div className="review-original">
-                  <label>元の英語字幕:</label>
-                  <p>{cue.source_text || <em className="empty-text">（空）</em>}</p>
+                <div className="review-compare">
+                  <div className="review-original">
+                    <label className="compare-label">翻訳前</label>
+                    <p>{cue.source_text || <em className="empty-text">（空）</em>}</p>
+                  </div>
+
+                  <div className="review-translated">
+                    <label className="compare-label">翻訳後</label>
+                    <p>
+                      {cue.translated_text || (
+                        <em className="empty-text">（翻訳なし）</em>
+                      )}
+                    </p>
+                  </div>
                 </div>
 
-                <div className="review-translated">
-                  <label>翻訳文:</label>
-                  <p>
-                    {cue.translated_text || (
-                      <em className="empty-text">（翻訳なし）</em>
-                    )}
-                  </p>
-                </div>
+                {/* LLM retry in flight */}
+                {isLoading && (
+                  <div className="review-llm-loading">AI翻訳中...</div>
+                )}
 
                 {/* LLM retry result */}
                 {retryResult && retryResult !== "loading" && (
