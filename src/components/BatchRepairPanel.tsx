@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   BatchRepairCue,
   BatchRepairResult,
@@ -16,7 +17,7 @@ interface BatchRepairPanelProps {
   llmConfig: LlmConfig | null;
   llmConfigured: boolean;
   translatedFileName: string | null;
-  onSave: (accepted: BatchRepairResult[]) => Promise<string>;
+  onSave: (accepted: BatchRepairResult[], outputDir?: string) => Promise<string>;
   onConnectionSuccess: () => void;
 }
 
@@ -47,16 +48,18 @@ export default function BatchRepairPanel({
   const [predictedPath, setPredictedPath] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [batchSize, setBatchSize] = useState(15);
+  const [outputDir, setOutputDir] = useState<string | null>(null);
   const cancelledRef = useRef(false);
 
-  // ── Fetch predicted save path on mount ─────────────────────────────────
+  // ── Fetch predicted save path on mount / outputDir change ──────────────
   useEffect(() => {
     if (translatedFileName) {
       invoke<string>("predict_llm_output_path", {
         translatedFileName,
+        outputDir,
       }).then(setPredictedPath);
     }
-  }, [translatedFileName]);
+  }, [translatedFileName, outputDir]);
 
   // ── Connection test ────────────────────────────────────────────────────
   const handleTestConnection = useCallback(async () => {
@@ -229,7 +232,7 @@ export default function BatchRepairPanel({
 
     setPanelState("saving");
     try {
-      const path = await onSave(accepted);
+      const path = await onSave(accepted, outputDir ?? undefined);
       setSavedSrtPath(path);
       setPanelState("previewing");
     } catch (e) {
@@ -266,6 +269,14 @@ export default function BatchRepairPanel({
     }
   }, [savedSrtPath]);
 
+  // ── Folder picker for output directory ──────────────────────────────────
+  const handleChangeFolder = useCallback(async () => {
+    const selected = await open({ directory: true, title: "保存先フォルダを選択" });
+    if (selected && typeof selected === "string") {
+      setOutputDir(selected);
+    }
+  }, []);
+
   // ── Compute stats ──────────────────────────────────────────────────────
   const acceptedCount = repairResults.filter((r) => r.status === "Accepted").length;
   const rejectedCount = repairResults.filter((r) => r.status === "Rejected").length;
@@ -278,7 +289,7 @@ export default function BatchRepairPanel({
     [targetCues]
   );
 
-  const canStartBatch = llmConfigured && testResult?.success && eligibleCues.length > 0;
+  const canStartBatch = llmConfigured && eligibleCues.length > 0;
   const hasSaved = savedSrtPath != null;
 
   // ── Cancel button text depends on state ────────────────────────────────
@@ -304,6 +315,27 @@ export default function BatchRepairPanel({
       {/* ── Idle / Testing ─────────────────────────────────────────── */}
       {(panelState === "idle" || panelState === "testing") && (
         <div className="batch-controls">
+          {/* AI connection status */}
+          {llmConfigured && llmConfig && (
+            <div className="ai-connection-status">
+              <span className="ai-status-dot configured" />
+              <span className="ai-status-text">
+                {llmConfig.provider !== "custom"
+                  ? `${llmConfig.provider} · ${llmConfig.model}`
+                  : `カスタム · ${llmConfig.model || "（モデル未設定）"}`}
+                {" "}接続済み
+              </span>
+            </div>
+          )}
+          {!llmConfigured && (
+            <div className="ai-connection-status not-configured">
+              <span className="ai-status-dot" />
+              <span className="ai-status-text">
+                AI接続未確認 — 必要に応じて「AI接続テスト」を実行してください。
+              </span>
+            </div>
+          )}
+
           <div className="batch-control-row">
             <button
               className="test-btn"
@@ -318,9 +350,13 @@ export default function BatchRepairPanel({
               disabled={!canStartBatch}
               onClick={handleBatchRepair}
             >
-              一括AI修正 ({eligibleCues.length}件)
+              未翻訳{eligibleCues.length}件をAIで補完
             </button>
           </div>
+
+          <p className="batch-note">
+            AI翻訳はすぐにSRTへ反映されません。翻訳候補を確認し、採用したものだけを新しいSRTに保存します。
+          </p>
 
           <div className="batch-size-row">
             <label>
@@ -496,9 +532,14 @@ export default function BatchRepairPanel({
               採用されたAI翻訳だけを反映し、元のSRTは変更せずに新しいSRTファイルを作成します。
             </p>
             {predictedPath && !hasSaved && (
-              <p className="save-dest-path">
-                保存先: <code>{predictedPath}</code>
-              </p>
+              <div className="save-dest-row">
+                <p className="save-dest-path">
+                  保存先: <code>{predictedPath}</code>
+                </p>
+                <button className="link-btn" onClick={handleChangeFolder}>
+                  フォルダを変更
+                </button>
+              </div>
             )}
           </div>
 

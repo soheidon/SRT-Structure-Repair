@@ -26,18 +26,6 @@ export default function App() {
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showLogWindow, setShowLogWindow] = useState(false);
-  /// Track which provider/model last had a successful AI connection
-  const [lastAiSuccess, setLastAiSuccess] = useState<{
-    provider: string;
-    model: string;
-  } | null>(null);
-
-  /// AI connection is OK only if the current provider+model matches the last successful one
-  const aiConnectionOk =
-    lastAiSuccess != null &&
-    llmConfig != null &&
-    lastAiSuccess.provider === llmConfig.provider &&
-    lastAiSuccess.model === llmConfig.model;
 
   /// Ref for scrolling to batch repair panel
   const batchPanelRef = useRef<HTMLDivElement>(null);
@@ -56,19 +44,12 @@ export default function App() {
 
   const handleConfigChanged = useCallback((config: LlmConfig) => {
     setLlmConfig(config);
-    // Reset AI success state when config changes (different provider/model)
-    setLastAiSuccess(null);
   }, []);
 
-  /// Mark AI connection as successful for the current provider+model
+  /// Mark AI connection as successful
   const markAiSuccess = useCallback(() => {
-    if (llmConfig?.configured) {
-      setLastAiSuccess({
-        provider: llmConfig.provider,
-        model: llmConfig.model,
-      });
-    }
-  }, [llmConfig]);
+    // Connection success is now shown by config state directly
+  }, []);
 
   const clearAllDebug = useCallback(() => setDebugLog([]), []);
 
@@ -117,12 +98,13 @@ export default function App() {
   }, []);
 
   const handleBatchSave = useCallback(
-    async (accepted: BatchRepairResult[]): Promise<string> => {
+    async (accepted: BatchRepairResult[], outputDir?: string): Promise<string> => {
       if (!summary) throw new Error("No repair summary available");
       return await invoke<string>("save_repaired_srt", {
         repairedCues: summary.repaired_cues,
         acceptedTranslations: accepted,
         translatedFileName: translatedFileName ?? "translated.srt",
+        outputDir: outputDir ?? null,
       });
     },
     [summary, translatedFileName],
@@ -253,7 +235,6 @@ export default function App() {
               summary={summary}
               onOpenLog={() => setShowLogWindow(true)}
               onScrollToBatch={scrollToBatchPanel}
-              aiConnectionOk={aiConnectionOk}
               aiEligibleCount={batchTargetCues.length}
               emptySourceCount={emptySourceCount}
             />

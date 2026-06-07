@@ -95,16 +95,10 @@ pub fn determine_log_path(translated_file_name: &str) -> String {
 ///
 /// Given `episode01.ja.srt`, produces `{home}/episode01.ja-Repaired_after_llm.srt`.
 /// If that file exists, tries `episode01.ja-Repaired_after_llm-2.srt`, `-3`, etc.
-pub fn determine_output_path_llm(translated_file_name: &str) -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-
-    let parent = if home.is_empty() {
-        Path::new(".")
-    } else {
-        Path::new(&home)
-    };
+///
+/// If `output_dir` is provided, uses that directory instead of the user's home.
+pub fn determine_output_path_llm_in_dir(translated_file_name: &str, output_dir: &str) -> String {
+    let parent = Path::new(output_dir);
 
     let name_path = Path::new(translated_file_name);
     let stem = name_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -134,6 +128,21 @@ pub fn determine_output_path_llm(translated_file_name: &str) -> String {
     }
 
     candidate.to_string_lossy().to_string()
+}
+
+/// Determine the output path for LLM-repaired SRT, defaulting to the user's home directory.
+pub fn determine_output_path_llm(translated_file_name: &str) -> String {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+
+    let parent = if home.is_empty() {
+        ".".to_string()
+    } else {
+        home
+    };
+
+    determine_output_path_llm_in_dir(translated_file_name, &parent)
 }
 
 /// Generate a plain-text repair log.

@@ -45,7 +45,6 @@ export default function RepairControls({
         translatedSrt: translatedContent,
         originalFileName: originalFileName ?? "original.srt",
         translatedFileName: translatedFileName ?? "translated.srt",
-        useLlm: llmConfigured,
       });
       onRepairComplete(summary);
     } catch (e) {

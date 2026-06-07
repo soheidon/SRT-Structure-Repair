@@ -22,6 +22,7 @@ export default function LlmSettings({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const currentProvider = providers.find((p) => p.id === selectedProvider);
   const isCustom = selectedProvider === "custom";
@@ -30,7 +31,9 @@ export default function LlmSettings({
   useEffect(() => {
     if (!isOpen) return;
 
+    setLoading(true);
     (async () => {
+      try {
       const [pList, cfg] = await Promise.all([
         invoke<LlmProviderInfo[]>("scan_llm_providers"),
         invoke<LlmConfig>("get_llm_config"),
@@ -55,6 +58,9 @@ export default function LlmSettings({
 
       setTestResult(null);
       setMessage(null);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [isOpen]);
 
@@ -172,6 +178,13 @@ export default function LlmSettings({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content modal-wide" onClick={(e) => e.stopPropagation()}>
         <h2>AIの設定</h2>
+
+        {loading ? (
+          <div className="modal-loading">
+            <p>読み込み中...</p>
+          </div>
+        ) : (
+          <>
 
         {/* Provider selector */}
         <div className="modal-field">
@@ -324,6 +337,9 @@ export default function LlmSettings({
             閉じる
           </button>
         </div>
+
+          </>
+        )}
       </div>
     </div>
   );

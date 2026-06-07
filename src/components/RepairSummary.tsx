@@ -4,8 +4,6 @@ interface RepairSummaryProps {
   summary: RepairSummary;
   onOpenLog: () => void;
   onScrollToBatch: () => void;
-  /** Whether AI connection test or any individual retry has succeeded */
-  aiConnectionOk: boolean;
   /** Number of cues eligible for AI batch repair */
   aiEligibleCount: number;
   /** Number of cues with empty source text (excluded from AI repair) */
@@ -16,49 +14,27 @@ export default function RepairSummaryView({
   summary,
   onOpenLog,
   onScrollToBatch,
-  aiConnectionOk,
   aiEligibleCount,
   emptySourceCount,
 }: RepairSummaryProps) {
   const hasProblems = summary.needs_review > 0 || summary.unmatched > 0;
-  // AI is working now even though initial repair failed
-  const aiRecovered = summary.llm_failed && aiConnectionOk;
-  // Not eligible for AI = needs_review - AIeligible - emptySource (structural issues etc.)
   const otherIssues =
     summary.needs_review - aiEligibleCount - emptySourceCount;
 
   return (
     <section className="repair-summary">
-      {summary.llm_failed && !aiConnectionOk ? (
-        <>
-          <h2 style={{ color: "#e65100" }}>
-            構造修復は完了しましたが、AI修復が失敗しました
-          </h2>
-          <div className="llm-error-banner">
-            <p>
-              AI APIでエラーが発生したため、AIによる字幕修復が完了しませんでした。
-              AI設定を確認し、再度修復を実行するか、以下の「一括AI修正」で翻訳を補完してください。
-            </p>
-          </div>
-        </>
-      ) : aiRecovered ? (
-        <>
-          <h2 style={{ color: "#2e7d32" }}>
-            構造修復は完了しました
-          </h2>
-          <div className="ai-info-banner">
-            <p>
-              初回AI修復には失敗しましたが、AI接続は現在利用可能です。
-              下の「一括AI修正」または個別「AIで修正」で未翻訳字幕をまとめて補完できます。
-            </p>
-          </div>
-        </>
-      ) : (
-        <h2>
-          {hasProblems
-            ? "修復が完了しました（確認が必要な字幕があります）"
-            : "修復が完了しました"}
-        </h2>
+      <h2 style={{ color: hasProblems ? "#e65100" : "#2e7d32" }}>
+        {hasProblems
+          ? "構造修復は完了しました（確認が必要な字幕があります）"
+          : "構造修復は完了しました"}
+      </h2>
+
+      {hasProblems && (
+        <div className="ai-info-banner">
+          <p>
+            AIによる字幕補完は下の「一括AI修正」または個別の「AIで修正」から実行できます。
+          </p>
+        </div>
       )}
 
       <div className="stats-grid">

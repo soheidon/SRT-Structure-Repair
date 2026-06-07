@@ -87,7 +87,6 @@ async fn repair_and_save_srt(
     translated_srt: String,
     original_file_name: String,
     translated_file_name: String,
-    use_llm: bool,
 ) -> Result<RepairSummary, String> {
     // TempGuard cleans up any temp files when it goes out of scope,
     // regardless of whether we return Ok or Err.
@@ -114,7 +113,7 @@ async fn repair_and_save_srt(
 
     // 3. Mechanical repair with localized problem detection
     let mech_result = mechanical_repair(&source_cues, &translation_cues);
-    let mut repaired = mech_result.repaired;
+    let repaired = mech_result.repaired;
 
     if !mech_result.problem_sections.is_empty() {
         process_log.push(format!(
@@ -142,132 +141,29 @@ async fn repair_and_save_srt(
         process_log.push("問題箇所は検出されませんでした。".to_string());
     }
 
-    // 4. Optional LLM repair for localized problem sections only
-    let mut llm_repaired_count = 0;
-    let mut llm_failed = false;
+    // 4. Count AI-eligible and empty-source cues (no LLM calls here)
+    let ai_eligible_count = repaired
+        .iter()
+        .filter(|c| !c.source_text.is_empty() && c.translated_text.is_empty())
+        .count();
+    let empty_source_count = repaired
+        .iter()
+        .filter(|c| c.source_text.is_empty())
+        .count();
 
-    // Snapshot pre-LLM translated text for repair log
-    let pre_llm_texts: Vec<String> = repaired.iter().map(|c| c.translated_text.clone()).collect();
-
-    // Read LLM config internally (not passed from frontend)
-    let llm_config = read_llm_config();
-
-    if use_llm
-        && !mech_result.problem_sections.is_empty()
-        && llm_config.configured
-    {
-        process_log.push(format!(
-            "AI修復を実行: プロバイダ={}, モデル={}",
-            llm_config.provider, llm_config.model
-        ));
-        process_log.push(format!(
-            "AI APIキー: 環境変数 {} から読み込み",
-            llm_config.api_key_env
-        ));
-
-        let api_key = read_api_key(&llm_config.api_key_env, None);
-        let endpoint = llm_config.base_url;
-        let model = llm_config.model;
-
-        // Resolve extra_body from provider config (e.g., Kimi thinking)
-        let extra_body: Option<serde_json::Value> = find_known_provider(&llm_config.provider)
-            .and_then(|kp| kp.extra_body)
-            .and_then(|s| serde_json::from_str(s).ok());
-
-        for (section_idx, section) in mech_result.problem_sections.iter().enumerate() {
-            // Send only: problem cues + context cues, never the entire file
-            let section_source = &source_cues
-                [section.source_start_idx..section.source_end_idx];
-
-            let trans_texts: Vec<String> = translation_cues
-                [section.translation_start_idx..section.translation_end_idx]
-                .iter()
-                .map(|t| t.text.clone())
-                .collect();
-
-            process_log.push(format!(
-                "  区間{}をAIに送信 ({} 個のcue)",
-                section_idx + 1,
-                section_source.len()
-            ));
-
-            match llm_repair::llm_repair_section(
-                section_source,
-                &trans_texts,
-                &api_key,
-                &endpoint,
-                &model,
-                extra_body.as_ref(),
-            )
-            .await
-            {
-                Ok(llm_cues) => {
-                    let section_llm_count =
-                        llm_cues.iter().filter(|c| c.status == RepairStatus::LLMRepaired).count();
-                    llm_repaired_count += section_llm_count;
-                    process_log.push(format!(
-                        "  区間{} AI応答: {} 件修復",
-                        section_idx + 1,
-                        section_llm_count
-                    ));
-
-                    // Merge only the repair target cues (not context cues)
-                    // We trust the LLM's id field to match the right cue
-                    for llm_cue in &llm_cues {
-                        if section.repair_target_indices.contains(
-                            &source_cues.iter().position(|s| s.id == llm_cue.id).unwrap_or(usize::MAX),
-                        ) || llm_cue.status == RepairStatus::NeedsReview
-                        {
-                            if let Some(existing) = repaired.iter_mut().find(|c| c.id == llm_cue.id) {
-                                if !llm_cue.translated_text.is_empty() {
-                                    existing.translated_text = llm_cue.translated_text.clone();
-                                    existing.status = llm_cue.status.clone();
-                                    existing.confidence = llm_cue.confidence;
-                                    existing.notes = llm_cue.notes.clone();
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    llm_failed = true;
-                    process_log.push(format!(
-                        "  区間{} AI修復失敗: {}",
-                        section_idx + 1,
-                        e
-                    ));
-                    // LLM failed — mark repair targets as NeedsReview, don't halt
-                    for &target_idx in &section.repair_target_indices {
-                        if let Some(cue) = repaired.get_mut(target_idx) {
-                            cue.status = RepairStatus::NeedsReview;
-                            cue.notes = Some(format!("AI repair failed: {}", e));
-                        }
-                    }
-                }
-            }
-        }
-    } else if use_llm && !llm_config.configured {
-        process_log.push(
-            "AI修復は要求されましたが、設定が完了していないためスキップしました。".to_string(),
-        );
+    if ai_eligible_count > 0 || empty_source_count > 0 {
+        process_log.push(format!("AI補完対象: {}件", ai_eligible_count));
+        process_log.push(format!("空字幕: {}件", empty_source_count));
     }
+
+    // Note: LLM repair is NOT run here.
+    // AI translation completion is handled by the frontend via
+    // `batch_translate_cues` (BatchRepairPanel) or per-cue retry (NeedsReviewList).
 
     // Collect NeedsReview and Unmatched cues for frontend display
     let needs_review_cues: Vec<RepairedCue> = repaired
         .iter()
         .filter(|c| c.status == RepairStatus::NeedsReview || c.status == RepairStatus::Unmatched)
-        .cloned()
-        .collect();
-
-    // Collect cues where LLM specifically failed
-    let llm_failed_cues: Vec<RepairedCue> = repaired
-        .iter()
-        .filter(|c| {
-            c.notes
-                .as_ref()
-                .map(|n| n.starts_with("AI repair failed"))
-                .unwrap_or(false)
-        })
         .cloned()
         .collect();
 
@@ -297,11 +193,10 @@ async fn repair_and_save_srt(
         .iter()
         .filter(|c| c.status == RepairStatus::Unmatched)
         .count();
-    let llm_repaired = llm_repaired_count;
 
     // 7. Build repair log entries (non-AutoMatched cues only)
     let mut log_entries: Vec<RepairLogEntry> = Vec::new();
-    for (i, cue) in repaired.iter().enumerate() {
+    for cue in repaired.iter() {
         if cue.status == RepairStatus::AutoMatched {
             continue;
         }
@@ -312,7 +207,7 @@ async fn repair_and_save_srt(
             status: cue.status.clone(),
             issue: issue_for_status(&cue.status, &cue.notes),
             source_text: cue.source_text.clone(),
-            translated_before: pre_llm_texts.get(i).cloned().unwrap_or_default(),
+            translated_before: String::new(),
             translated_after: cue.translated_text.clone(),
             confidence: if cue.confidence > 0.0 { Some(cue.confidence) } else { None },
         });
@@ -329,7 +224,7 @@ async fn repair_and_save_srt(
         total_cues,
         auto_matched,
         structure_recovered,
-        llm_repaired,
+        0, // llm_repaired — always 0 (AI repair is separate)
         needs_review,
         unmatched,
     );
@@ -343,14 +238,14 @@ async fn repair_and_save_srt(
         total_cues,
         auto_matched,
         structure_recovered,
-        llm_repaired,
+        llm_repaired: 0,
         needs_review,
         unmatched,
         output_path,
         log_path,
-        llm_failed,
+        llm_failed: false,
         needs_review_cues,
-        llm_failed_cues,
+        llm_failed_cues: vec![],
         repaired_cues,
         log_entries,
         process_log,
@@ -698,6 +593,7 @@ fn save_repaired_srt(
     repaired_cues: Vec<RepairedCue>,
     accepted_translations: Vec<BatchRepairResult>,
     translated_file_name: String,
+    output_dir: Option<String>,
 ) -> Result<String, String> {
     // Build a map of accepted translations: cue_id → new text
     let accepted_map: std::collections::HashMap<u32, String> = accepted_translations
@@ -719,8 +615,12 @@ fn save_repaired_srt(
         })
         .collect();
 
-    // Use same output directory as the main repair, but with different suffix
-    let output_path = output::determine_output_path_llm(&translated_file_name);
+    // Use provided output directory, or default to home
+    let output_path = if let Some(ref dir) = output_dir {
+        output::determine_output_path_llm_in_dir(&translated_file_name, dir)
+    } else {
+        output::determine_output_path_llm(&translated_file_name)
+    };
     let srt_content = output::generate_srt(&merged);
 
     std::fs::write(&output_path, &srt_content)
@@ -732,8 +632,12 @@ fn save_repaired_srt(
 /// Predict the output path for LLM-repaired SRT without creating the file.
 /// Used by the frontend to show users where the file will be saved.
 #[tauri::command]
-fn predict_llm_output_path(translated_file_name: String) -> String {
-    output::determine_output_path_llm(&translated_file_name)
+fn predict_llm_output_path(translated_file_name: String, output_dir: Option<String>) -> String {
+    if let Some(dir) = output_dir {
+        output::determine_output_path_llm_in_dir(&translated_file_name, &dir)
+    } else {
+        output::determine_output_path_llm(&translated_file_name)
+    }
 }
 
 /// Open a file with the OS default application.

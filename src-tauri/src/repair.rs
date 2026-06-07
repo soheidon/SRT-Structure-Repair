@@ -1,27 +1,17 @@
 use crate::types::{RepairStatus, RepairedCue, SourceCue, TranslationCue};
 
-/// Number of context cues to include before a problem section for LLM repair.
-const LLM_CONTEXT_CUES: usize = 10;
-
 /// Result of mechanical repair: successfully repaired cues + problem sections.
 pub struct MechanicalRepairResult {
     pub repaired: Vec<RepairedCue>,
-    /// Sections that need LLM repair.
-    /// Each section includes context cues for the LLM to understand the surrounding text.
+    /// Sections where source/translation counts didn't match.
     pub problem_sections: Vec<ProblemSection>,
 }
 
 pub struct ProblemSection {
-    /// Start index in the source cues (inclusive), including context
+    /// Start index in the source cues (inclusive)
     pub source_start_idx: usize,
     /// End index in the source cues (exclusive)
     pub source_end_idx: usize,
-    /// Start index in the translation cues (inclusive)
-    pub translation_start_idx: usize,
-    /// End index in the translation cues (exclusive)
-    pub translation_end_idx: usize,
-    /// The source cue indices that actually need repair (without context)
-    pub repair_target_indices: Vec<usize>,
 }
 
 /// Perform mechanical repair by matching source cues to translation texts.
@@ -120,23 +110,13 @@ pub fn mechanical_repair(
         });
     }
 
-    // 3. Build localized problem section, NOT the entire range
-    // The problem is only in the mismatched tail, with context cues before it
-    let problem_start = if min_count > LLM_CONTEXT_CUES {
-        min_count - LLM_CONTEXT_CUES
-    } else {
-        0
-    };
-
-    let repair_target_indices: Vec<usize> = (min_count..source_count).collect();
+    // 3. Build problem section for the mismatched tail
+    let problem_start = min_count;
 
     let problem_sections = if source_count != translation_texts.len() {
         vec![ProblemSection {
             source_start_idx: problem_start,
             source_end_idx: source_count,
-            translation_start_idx: problem_start.min(translation_texts.len()),
-            translation_end_idx: translation_texts.len(),
-            repair_target_indices,
         }]
     } else {
         Vec::new()
@@ -222,15 +202,11 @@ mod tests {
         assert_eq!(result.repaired[13].status, RepairStatus::NeedsReview);
         assert_eq!(result.repaired[14].status, RepairStatus::NeedsReview);
 
-        // Problem section should NOT start at 0 (not the whole file)
+        // Problem section should start at min_count (12)
         assert!(!result.problem_sections.is_empty());
         let section = &result.problem_sections[0];
-        // Should start at min_count - CONTEXT = 12 - 10 = 2
-        assert_eq!(section.source_start_idx, 2);
-        // Should end at source_count = 15
+        assert_eq!(section.source_start_idx, 12);
         assert_eq!(section.source_end_idx, 15);
-        // Repair targets should be only the mismatched cues [12, 13, 14]
-        assert_eq!(section.repair_target_indices, vec![12, 13, 14]);
     }
 
     #[test]
@@ -246,16 +222,14 @@ mod tests {
     }
 
     #[test]
-    fn small_mismatch_full_context() {
-        // When mismatch is small enough, context starts from 0
+    fn small_mismatch_problem_section() {
+        // min_count=2, so problem section starts at 2
         let source = make_source_cues(&["A", "B", "C", "D", "E"]);
         let translation = make_translation_cues(&["a", "b"]); // 3 fewer
         let result = mechanical_repair(&source, &translation);
 
         let section = &result.problem_sections[0];
-        // min_count=2, 2 < 10, so start at 0
-        assert_eq!(section.source_start_idx, 0);
+        assert_eq!(section.source_start_idx, 2);
         assert_eq!(section.source_end_idx, 5);
-        assert_eq!(section.repair_target_indices, vec![2, 3, 4]);
     }
 }
