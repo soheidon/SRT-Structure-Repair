@@ -3,23 +3,13 @@ import { RepairSummary } from "../types";
 interface RepairSummaryProps {
   summary: RepairSummary;
   onOpenLog: () => void;
-  onScrollToBatch: () => void;
-  /** Number of cues eligible for AI batch repair */
-  aiEligibleCount: number;
-  /** Number of cues with empty source text (excluded from AI repair) */
-  emptySourceCount: number;
 }
 
 export default function RepairSummaryView({
   summary,
   onOpenLog,
-  onScrollToBatch,
-  aiEligibleCount,
-  emptySourceCount,
 }: RepairSummaryProps) {
   const hasProblems = summary.needs_review > 0 || summary.unmatched > 0;
-  const otherIssues =
-    summary.needs_review - aiEligibleCount - emptySourceCount;
 
   return (
     <section className="repair-summary">
@@ -57,13 +47,9 @@ export default function RepairSummaryView({
           </div>
         )}
         {summary.needs_review > 0 && (
-          <div
-            className="stat-card stat-warn clickable"
-            onClick={onScrollToBatch}
-            title="クリックして一括AI修正へ"
-          >
+          <div className="stat-card stat-warn">
             <span className="stat-value">{summary.needs_review}</span>
-            <span className="stat-label">確認が必要 ↓</span>
+            <span className="stat-label">確認が必要</span>
           </div>
         )}
         {summary.unmatched > 0 && (
@@ -73,30 +59,6 @@ export default function RepairSummaryView({
           </div>
         )}
       </div>
-
-      {/* Breakdown of needs-review cues */}
-      {hasProblems && (
-        <div className="stats-breakdown">
-          {aiEligibleCount > 0 && (
-            <div className="breakdown-item breakdown-ai">
-              <span className="breakdown-value">{aiEligibleCount}件</span>
-              <span className="breakdown-label">AI補完対象</span>
-            </div>
-          )}
-          {emptySourceCount > 0 && (
-            <div className="breakdown-item breakdown-empty">
-              <span className="breakdown-value">{emptySourceCount}件</span>
-              <span className="breakdown-label">空字幕（補完対象外）</span>
-            </div>
-          )}
-          {otherIssues > 0 && (
-            <div className="breakdown-item breakdown-other">
-              <span className="breakdown-value">{otherIssues}件</span>
-              <span className="breakdown-label">その他（構造問題等）</span>
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="output-paths">
         <div className="output-path">

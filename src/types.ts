@@ -90,3 +90,37 @@ export interface BatchRepairResult {
   status: BatchCueStatus;
   error?: string;
 }
+
+// ── Review Panel types ────────────────────────────────────────────────────
+
+/** Client-side status for each cue in the unified review panel. */
+export type ReviewCueStatus =
+  | "unreviewed"       // Unmatched, not yet looked at
+  | "needs_review"     // NeedsReview with non-empty translation
+  | "candidate"        // Has AI candidate, not yet decided
+  | "ai_individual_repaired"  // Individual AI retry succeeded
+  | "ai_batch_repaired"       // Batch AI repair populated a candidate
+  | "candidate_edited" // User edited the AI candidate manually
+  | "accepted"         // User accepted this cue's translation
+  | "rejected"         // User explicitly rejected
+  | "empty"            // Source text is empty — cannot be repaired
+  | "error";           // LLM API call failed for this cue
+
+/** Unified cue representation for the review panel table + detail pane. */
+export interface ReviewCue {
+  id: number;
+  start: string;                // from original SRT
+  end: string;                  // from original SRT
+  duration: string;             // computed: end - start
+  sourceText: string;           // original English
+  currentTranslation: string;   // current Japanese (may be empty)
+  aiTranslation: string;        // LLM-generated translation
+  editedTranslation: string;    // user manually edited translation
+  confidence: number;           // LLM confidence (0-1), reference only
+  status: ReviewCueStatus;
+  selected: boolean;
+  userEdited: boolean;
+  note: string;                 // backend notes (e.g. "No matching translation text found")
+  error: string;                // LLM error message
+  isAiRepairable: boolean;      // has source text AND (no translation OR LLM failed)
+}

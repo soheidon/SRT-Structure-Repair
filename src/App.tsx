@@ -1,24 +1,61 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RepairSummary, LlmConfig, BatchRepairCue, BatchRepairResult } from "./types";
+import {
+  RepairSummary,
+  LlmConfig,
+  BatchRepairResult,
+  ReviewCue,
+  ReviewCueStatus,
+} from "./types";
 import FileSelector from "./components/FileSelector";
 import RepairControls from "./components/RepairControls";
 import RepairSummaryView from "./components/RepairSummary";
-import NeedsReviewList from "./components/NeedsReviewList";
 import LlmSettings from "./components/LlmSettings";
 import RepairLogWindow from "./components/RepairLogWindow";
-import BatchRepairPanel from "./components/BatchRepairPanel";
+import ReviewPanel from "./components/ReviewPanel";
+
+/** Parse "HH:MM:SS,mmm" to ms */
+function parseTimestamp(ts: string): number {
+  const m = ts.match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
+  if (!m) return 0;
+  return (
+    parseInt(m[1], 10) * 3600000 +
+    parseInt(m[2], 10) * 60000 +
+    parseInt(m[3], 10) * 1000 +
+    parseInt(m[4], 10)
+  );
+}
+
+function formatDuration(start: string, end: string): string {
+  const dt = parseTimestamp(end) - parseTimestamp(start);
+  const mins = Math.floor(dt / 60000);
+  const secs = Math.floor((dt % 60000) / 1000);
+  const ms = dt % 1000;
+  return mins > 0
+    ? `${mins}:${String(secs).padStart(2, "0")}.${String(ms).padStart(3, "0")}`
+    : `${secs}.${String(ms).padStart(3, "0")}s`;
+}
+
+/** Map backend RepairStatus → ReviewCueStatus */
+function mapInitialStatus(
+  status: string,
+  sourceText: string,
+  notes?: string,
+): ReviewCueStatus {
+  if (!sourceText) return "empty";
+  if (notes?.startsWith("AI repair failed") || notes?.startsWith("LLM repair failed"))
+    return "error";
+  if (status === "Unmatched") return "unreviewed";
+  if (status === "NeedsReview") return "needs_review";
+  return "needs_review";
+}
 
 export default function App() {
-  // --- File state: name + content (no file paths needed) ---
+  // ── File state ───────────────────────────────────────────────────────
   const [originalFileName, setOriginalFileName] = useState<string | null>(null);
   const [originalContent, setOriginalContent] = useState<string | null>(null);
-  const [translatedFileName, setTranslatedFileName] = useState<string | null>(
-    null,
-  );
-  const [translatedContent, setTranslatedContent] = useState<string | null>(
-    null,
-  );
+  const [translatedFileName, setTranslatedFileName] = useState<string | null>(null);
+  const [translatedContent, setTranslatedContent] = useState<string | null>(null);
 
   const [summary, setSummary] = useState<RepairSummary | null>(null);
   const [isRepairing, setIsRepairing] = useState(false);
@@ -27,17 +64,48 @@ export default function App() {
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [showLogWindow, setShowLogWindow] = useState(false);
 
-  /// Ref for scrolling to batch repair panel
-  const batchPanelRef = useRef<HTMLDivElement>(null);
+  // ── AI connection tracking (tied to provider/model) ──────────────────
+  const lastProviderRef = useRef<string>("");
+  const lastModelRef = useRef<string>("");
+  const connectionOkRef = useRef(false);
 
-  /// Debug messages for on-screen diagnostics
+  const aiConnectionOk =
+    llmConfig != null &&
+    connectionOkRef.current &&
+    lastProviderRef.current === llmConfig.provider &&
+    lastModelRef.current === llmConfig.model;
+
+  // Reset connection state when provider/model change
+  useEffect(() => {
+    if (llmConfig) {
+      if (
+        lastProviderRef.current !== llmConfig.provider ||
+        lastModelRef.current !== llmConfig.model
+      ) {
+        lastProviderRef.current = llmConfig.provider;
+        lastModelRef.current = llmConfig.model;
+        connectionOkRef.current = false;
+      }
+    }
+  }, [llmConfig?.provider, llmConfig?.model]);
+
+  const markAiSuccess = useCallback(() => {
+    if (llmConfig) {
+      lastProviderRef.current = llmConfig.provider;
+      lastModelRef.current = llmConfig.model;
+      connectionOkRef.current = true;
+    }
+  }, [llmConfig]);
+
+  // ── Debug log ────────────────────────────────────────────────────────
   const [debugLog, setDebugLog] = useState<string[]>([]);
-
   const addDebug = useCallback((msg: string) => {
     console.log("[D&D]", msg);
     setDebugLog((prev) => [...prev.slice(-19), msg]);
   }, []);
+  const clearAllDebug = useCallback(() => setDebugLog([]), []);
 
+  // ── LLM config ───────────────────────────────────────────────────────
   useEffect(() => {
     invoke<LlmConfig>("get_llm_config").then(setLlmConfig);
   }, []);
@@ -45,13 +113,6 @@ export default function App() {
   const handleConfigChanged = useCallback((config: LlmConfig) => {
     setLlmConfig(config);
   }, []);
-
-  /// Mark AI connection as successful
-  const markAiSuccess = useCallback(() => {
-    // Connection success is now shown by config state directly
-  }, []);
-
-  const clearAllDebug = useCallback(() => setDebugLog([]), []);
 
   const llmConfigured = llmConfig?.configured ?? false;
 
@@ -66,37 +127,37 @@ export default function App() {
     ? (PROVIDER_NAMES[llmConfig.provider] ?? llmConfig.provider)
     : "";
 
-  // Build BatchRepairCue list from needs_review_cues (only translation-gap cues)
-  const batchTargetCues: BatchRepairCue[] = useMemo(() => {
+  // ── Derive ReviewCue[] from summary ──────────────────────────────────
+  const reviewCues: ReviewCue[] = useMemo(() => {
     if (!summary) return [];
-    return summary.needs_review_cues
-      .filter((cue) => {
-        // Only include cues where: source exists AND (translation is empty OR LLM failed)
-        if (!cue.source_text) return false;
-        if (!cue.translated_text) return true;
-        if (cue.notes?.startsWith("AI repair failed")) return true;
-        return false;
-      })
-      .map((cue, idx, arr) => ({
+    return summary.needs_review_cues.map((cue) => {
+      const hasSource = !!cue.source_text;
+      const noTranslation = !cue.translated_text;
+      const llmFailed =
+        cue.notes?.startsWith("AI repair failed") ||
+        cue.notes?.startsWith("LLM repair failed");
+
+      return {
         id: cue.id,
-        source_text: cue.source_text,
-        current_translation: cue.translated_text,
-        context_before: idx > 0 ? (arr[idx - 1]?.source_text ?? "") : "",
-        context_after:
-          idx < arr.length - 1 ? (arr[idx + 1]?.source_text ?? "") : "",
-      }));
+        start: cue.start,
+        end: cue.end,
+        duration: formatDuration(cue.start, cue.end),
+        sourceText: cue.source_text,
+        currentTranslation: cue.translated_text,
+        aiTranslation: "",
+        editedTranslation: "",
+        confidence: cue.confidence > 0 && cue.confidence < 1 ? cue.confidence : 0,
+        status: mapInitialStatus(cue.status, cue.source_text, cue.notes),
+        selected: false,
+        userEdited: false,
+        note: cue.notes ?? "",
+        error: llmFailed ? (cue.notes ?? "") : "",
+        isAiRepairable: hasSource && (noTranslation || llmFailed === true),
+      };
+    });
   }, [summary]);
 
-  // Count empty-source cues (excluded from AI repair)
-  const emptySourceCount = useMemo(() => {
-    if (!summary) return 0;
-    return summary.needs_review_cues.filter((cue) => !cue.source_text).length;
-  }, [summary]);
-
-  const scrollToBatchPanel = useCallback(() => {
-    batchPanelRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
-
+  // ── Save ─────────────────────────────────────────────────────────────
   const handleBatchSave = useCallback(
     async (accepted: BatchRepairResult[], outputDir?: string): Promise<string> => {
       if (!summary) throw new Error("No repair summary available");
@@ -110,6 +171,7 @@ export default function App() {
     [summary, translatedFileName],
   );
 
+  // ── Render ───────────────────────────────────────────────────────────
   return (
     <div className="app">
       <header className="app-header">
@@ -143,9 +205,7 @@ export default function App() {
             fileName={originalFileName}
             disabled={isRepairing}
             onFileLoaded={(name, content) => {
-              addDebug(
-                `[original] loaded: ${name} (${content.length} chars)`,
-              );
+              addDebug(`[original] loaded: ${name} (${content.length} chars)`);
               setOriginalFileName(name);
               setOriginalContent(content);
               setError(null);
@@ -161,9 +221,7 @@ export default function App() {
             fileName={translatedFileName}
             disabled={isRepairing}
             onFileLoaded={(name, content) => {
-              addDebug(
-                `[translated] loaded: ${name} (${content.length} chars)`,
-              );
+              addDebug(`[translated] loaded: ${name} (${content.length} chars)`);
               setTranslatedFileName(name);
               setTranslatedContent(content);
               setError(null);
@@ -201,15 +259,12 @@ export default function App() {
           }}
         />
 
-        {/* Debug panel — shown while no successful repair yet */}
+        {/* Debug panel */}
         {!summary && debugLog.length > 0 && (
           <div className="debug-panel">
             <div className="debug-header">
               <span>D&D デバッグログ</span>
-              <button
-                className="debug-clear-btn"
-                onClick={clearAllDebug}
-              >
+              <button className="debug-clear-btn" onClick={clearAllDebug}>
                 クリア
               </button>
             </div>
@@ -234,28 +289,18 @@ export default function App() {
             <RepairSummaryView
               summary={summary}
               onOpenLog={() => setShowLogWindow(true)}
-              onScrollToBatch={scrollToBatchPanel}
-              aiEligibleCount={batchTargetCues.length}
-              emptySourceCount={emptySourceCount}
             />
             {summary.needs_review > 0 && (
-              <NeedsReviewList
-                cues={summary.needs_review_cues}
+              <ReviewPanel
+                initialCues={reviewCues}
                 repairedCues={summary.repaired_cues}
-                onRetrySuccess={markAiSuccess}
+                llmConfig={llmConfig}
+                llmConfigured={llmConfigured}
+                aiConnectionOk={aiConnectionOk}
+                translatedFileName={translatedFileName}
+                onSave={handleBatchSave}
+                onConnectionSuccess={markAiSuccess}
               />
-            )}
-            {summary.needs_review > 0 && batchTargetCues.length > 0 && (
-              <div ref={batchPanelRef}>
-                <BatchRepairPanel
-                  targetCues={batchTargetCues}
-                  llmConfig={llmConfig}
-                  llmConfigured={llmConfigured}
-                  translatedFileName={translatedFileName}
-                  onSave={handleBatchSave}
-                  onConnectionSuccess={markAiSuccess}
-                />
-              </div>
             )}
           </>
         )}
