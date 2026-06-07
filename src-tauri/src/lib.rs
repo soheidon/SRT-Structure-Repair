@@ -1,3 +1,4 @@
+mod config;
 mod env_config;
 mod llm_repair;
 mod loose_parser;
@@ -6,8 +7,12 @@ mod parser;
 mod repair;
 mod types;
 
+use config::ConfigManager;
+use types::ReviewLogEntry;
 use repair::mechanical_repair;
-use types::{BatchCueStatus, BatchRepairCue, BatchRepairResult, LlmConfig, LlmProviderInfo, RepairLogEntry, RepairStatus, RepairSummary, RepairedCue, KNOWN_PROVIDERS};
+use std::sync::Mutex;
+use tauri::State;
+use types::{BatchCueStatus, BatchRepairCue, BatchRepairResult, BatchTranslateMode, LlmConfig, LlmProviderInfo, RepairLogEntry, RepairStatus, RepairSummary, RepairedCue, KNOWN_PROVIDERS};
 
 /// Resolve the actual API key from the given env var name.
 /// Checks the primary env var first, then the fallback if the primary is empty.
@@ -87,10 +92,17 @@ async fn repair_and_save_srt(
     translated_srt: String,
     original_file_name: String,
     translated_file_name: String,
+    state: State<'_, Mutex<ConfigManager>>,
 ) -> Result<RepairSummary, String> {
     // TempGuard cleans up any temp files when it goes out of scope,
     // regardless of whether we return Ok or Err.
     let _temp = TempGuard::new();
+
+    // Extract work_dir from config before any .await
+    let work_dir = {
+        let mgr = state.lock().unwrap();
+        output::resolve_work_dir(mgr.work_dir())
+    };
 
     // Process log: sequential events shown in the "全ログ" tab and .log file
     let mut process_log: Vec<String> = Vec::new();
@@ -100,6 +112,8 @@ async fn repair_and_save_srt(
     let translated_content = translated_srt;
     process_log.push(format!("元SRT読み込み完了: {} ({} bytes)", original_file_name, original_content.len()));
     process_log.push(format!("翻訳SRT読み込み完了: {} ({} bytes)", translated_file_name, translated_content.len()));
+
+    process_log.push(format!("作業フォルダ: {}", work_dir.display()));
 
     // 2. Parse
     let source_cues = parser::parse_strict(&original_content)
@@ -171,7 +185,7 @@ async fn repair_and_save_srt(
     let repaired_cues = repaired.clone();
 
     // 5. Generate and auto-save output
-    let output_path = output::determine_output_path(&translated_file_name);
+    let output_path = output::determine_output_path(&translated_file_name, &work_dir);
     let srt_content = output::generate_srt(&repaired);
 
     std::fs::write(&output_path, &srt_content)
@@ -214,7 +228,7 @@ async fn repair_and_save_srt(
     }
 
     // 8. Save repair log file
-    let log_path = output::determine_log_path(&translated_file_name);
+    let log_path = output::determine_log_path(&translated_file_name, &work_dir);
     let log_content = output::generate_log(
         &log_entries,
         &process_log,
@@ -254,92 +268,10 @@ async fn repair_and_save_srt(
 
 /// Private helper: read stored LLM config from env vars.
 /// Used by both the tauri command and repair_and_save_srt internally.
-fn read_llm_config() -> LlmConfig {
-    let provider = env_config::read_config("SRT_REPAIR_LLM_PROVIDER").unwrap_or_default();
-
-    // Legacy migration: old config stored raw key in SRT_REPAIR_LLM_API_KEY without a provider
-    if provider.is_empty() {
-        let legacy_key = env_config::read_config("SRT_REPAIR_LLM_API_KEY").unwrap_or_default();
-        if !legacy_key.is_empty() {
-            // Migrate to Custom provider
-            let _ = env_config::write_config("SRT_REPAIR_LLM_PROVIDER", "custom");
-            let base_url = env_config::read_config("SRT_REPAIR_LLM_BASE_URL")
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            let model = env_config::read_config("SRT_REPAIR_LLM_MODEL")
-                .unwrap_or_else(|| "gpt-4o-mini".to_string());
-            return LlmConfig {
-                provider: "custom".to_string(),
-                base_url,
-                model,
-                api_key_env: "SRT_REPAIR_LLM_API_KEY".to_string(),
-                configured: true,
-            };
-        }
-        return LlmConfig {
-            provider: String::new(),
-            base_url: String::new(),
-            model: String::new(),
-            api_key_env: String::new(),
-            configured: false,
-        };
-    }
-
-    let stored_api_key_env = env_config::read_config("SRT_REPAIR_LLM_API_KEY").unwrap_or_default();
-    let base_url = env_config::read_config("SRT_REPAIR_LLM_BASE_URL").unwrap_or_default();
-    let model = env_config::read_config("SRT_REPAIR_LLM_MODEL").unwrap_or_default();
-
-    // Fill in defaults for known providers
-    let (base_url, model) = if provider != "custom" {
-        let kp = find_known_provider(&provider);
-        (
-            if base_url.is_empty() { kp.map(|p| p.default_base_url.to_string()).unwrap_or_default() } else { base_url },
-            if model.is_empty() { kp.map(|p| p.default_model.to_string()).unwrap_or_default() } else { model },
-        )
-    } else {
-        (base_url, model)
-    };
-
-    // Determine if the API key env var has a value
-    let configured = if provider == "custom" {
-        // For Custom, the stored value IS the key, stored in SRT_REPAIR_LLM_API_KEY
-        !stored_api_key_env.is_empty()
-    } else {
-        // For known providers, resolve from the referenced env var
-        let kp = find_known_provider(&provider);
-        let env_name = if stored_api_key_env.is_empty() {
-            kp.map(|p| p.api_key_env).unwrap_or("")
-        } else {
-            &stored_api_key_env
-        };
-        let fallback = kp.and_then(|p| p.api_key_env_fallback);
-        !read_api_key(env_name, fallback).is_empty()
-    };
-
-    let api_key_env = if stored_api_key_env.is_empty() {
-        if provider == "custom" {
-            "SRT_REPAIR_LLM_API_KEY".to_string()
-        } else {
-            find_known_provider(&provider)
-                .map(|p| p.api_key_env.to_string())
-                .unwrap_or_default()
-        }
-    } else {
-        stored_api_key_env
-    };
-
-    LlmConfig {
-        provider,
-        base_url,
-        model,
-        api_key_env,
-        configured,
-    }
-}
-
-/// Read LLM configuration from stored env vars.
+/// Read LLM configuration from stored config.
 #[tauri::command]
-fn get_llm_config() -> LlmConfig {
-    read_llm_config()
+fn get_llm_config(state: State<'_, Mutex<ConfigManager>>) -> LlmConfig {
+    state.lock().unwrap().to_llm_config()
 }
 
 /// Scan all known providers and check if their env vars are set.
@@ -380,7 +312,7 @@ fn scan_llm_providers() -> Vec<LlmProviderInfo> {
     providers
 }
 
-/// Save LLM configuration to user environment variables.
+/// Save LLM configuration to config file.
 /// For known providers, `api_key_value` should be None (the key lives in the provider's standard env var).
 /// For Custom, `api_key_value` is written to SRT_REPAIR_LLM_API_KEY.
 #[tauri::command]
@@ -390,44 +322,44 @@ fn save_llm_config(
     model: String,
     api_key_env: String,
     api_key_value: Option<String>,
+    state: State<'_, Mutex<ConfigManager>>,
 ) -> Result<(), String> {
-    env_config::write_config("SRT_REPAIR_LLM_PROVIDER", &provider)?;
-    env_config::write_config("SRT_REPAIR_LLM_BASE_URL", &base_url)?;
-    env_config::write_config("SRT_REPAIR_LLM_MODEL", &model)?;
+    let mut mgr = state.lock().unwrap();
+    mgr.set_ai_config(&provider, &base_url, &model, &api_key_env)?;
 
     if provider == "custom" {
         // For Custom, store the key value directly in SRT_REPAIR_LLM_API_KEY
         let key = api_key_value.unwrap_or_default();
         if key.is_empty() {
-            env_config::delete_config("SRT_REPAIR_LLM_API_KEY")?;
+            let _ = env_config::delete_config("SRT_REPAIR_LLM_API_KEY");
         } else {
             env_config::write_config("SRT_REPAIR_LLM_API_KEY", &key)?;
         }
-    } else {
-        // For known providers, store the env var name (not the key value)
-        env_config::write_config("SRT_REPAIR_LLM_API_KEY", &api_key_env)?;
     }
     Ok(())
 }
 
-/// Delete all LLM configuration from user environment variables.
+/// Delete all LLM configuration from the config file.
 #[tauri::command]
-fn delete_llm_config() -> Result<(), String> {
-    env_config::delete_config("SRT_REPAIR_LLM_PROVIDER")?;
-    env_config::delete_config("SRT_REPAIR_LLM_BASE_URL")?;
-    env_config::delete_config("SRT_REPAIR_LLM_MODEL")?;
-    env_config::delete_config("SRT_REPAIR_LLM_API_KEY")?;
+fn delete_llm_config(state: State<'_, Mutex<ConfigManager>>) -> Result<(), String> {
+    let mut mgr = state.lock().unwrap();
+    mgr.clear_ai_config()?;
+    // Also delete the custom API key env var if it exists
+    let _ = env_config::delete_config("SRT_REPAIR_LLM_API_KEY");
     Ok(())
 }
 
 /// Test the LLM connection with a minimal API call that validates JSON format.
 /// Resolves the API key from the specified env var at test time.
+/// On success, records the provider/model as verified in the config.
 #[tauri::command]
 async fn test_llm_connection(
+    provider: String,
     base_url: String,
     model: String,
     api_key_env: String,
     api_key_fallback: Option<String>,
+    state: State<'_, Mutex<ConfigManager>>,
 ) -> Result<String, String> {
     let api_key = read_api_key(&api_key_env, api_key_fallback.as_deref());
     if api_key.is_empty() {
@@ -484,10 +416,11 @@ async fn test_llm_connection(
     let arr = parsed
         .get("translations")
         .or_else(|| parsed.get("cues"))
+        .or_else(|| parsed.get("reviews"))
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
             format!(
-                "JSON形式が不正です（translations/cues 配列が見つかりません）: {}",
+                "JSON形式が不正です（translations/cues/reviews 配列が見つかりません）: {}",
                 content
             )
         })?;
@@ -499,10 +432,25 @@ async fn test_llm_connection(
     let first = &arr[0];
     let has_id = first.get("id").and_then(|v| v.as_u64()).is_some();
     let has_translation = first.get("translation").and_then(|v| v.as_str()).is_some();
+    let has_suggested = first.get("suggested_translation").and_then(|v| v.as_str()).is_some();
+    let has_review_status = first.get("review_status").and_then(|v| v.as_str()).is_some();
 
-    if has_id && has_translation {
+    if has_id && (has_translation || has_suggested || has_review_status) {
+        // Validate workspace directory is writable
+        let wd = {
+            let mgr = state.lock().unwrap();
+            output::resolve_work_dir(mgr.work_dir())
+        };
+        if let Err(e) = std::fs::create_dir_all(wd.join("outputs")) {
+            return Err(format!("作業フォルダに書き込めません: {}", e));
+        }
+        // Mark connection success in config
+        {
+            let mut mgr = state.lock().unwrap();
+            let _ = mgr.mark_connection_success(&provider, &model);
+        }
         Ok(format!(
-            "接続テスト成功 — JSON形式OK（{}件の翻訳）",
+            "接続テスト成功 — JSON形式OK（{}件の結果）",
             arr.len()
         ))
     } else {
@@ -521,26 +469,38 @@ async fn test_llm_connection(
 async fn batch_translate_cues(
     cues: Vec<BatchRepairCue>,
     batch_size: usize,
+    mode: String,
+    state: State<'_, Mutex<ConfigManager>>,
 ) -> Result<Vec<BatchRepairResult>, String> {
     if cues.is_empty() {
         return Ok(Vec::new());
     }
 
-    let llm_config = read_llm_config();
-    if !llm_config.configured {
-        return Err("AIが設定されていません。".to_string());
-    }
+    let mode = match mode.as_str() {
+        "retranslate" => BatchTranslateMode::Retranslate,
+        "supplement_untranslated" => BatchTranslateMode::SupplementUntranslated,
+        "review" => BatchTranslateMode::Review,
+        _ => BatchTranslateMode::Retranslate, // safe default
+    };
 
-    let api_key = read_api_key(&llm_config.api_key_env, None);
-    let endpoint = format!(
-        "{}/chat/completions",
-        llm_config.base_url.trim_end_matches('/')
-    );
-    let model = llm_config.model;
-
-    let extra_body: Option<serde_json::Value> = find_known_provider(&llm_config.provider)
-        .and_then(|kp| kp.extra_body)
-        .and_then(|s| serde_json::from_str(s).ok());
+    // Extract LLM config before any .await
+    let (_llm_config, api_key, endpoint, model, extra_body) = {
+        let mgr = state.lock().unwrap();
+        let llm_config = mgr.to_llm_config();
+        if !llm_config.configured {
+            return Err("AIが設定されていません。".to_string());
+        }
+        let api_key = read_api_key(&llm_config.api_key_env, None);
+        let endpoint = format!(
+            "{}/chat/completions",
+            llm_config.base_url.trim_end_matches('/')
+        );
+        let model = llm_config.model.clone();
+        let extra_body: Option<serde_json::Value> = find_known_provider(&llm_config.provider)
+            .and_then(|kp| kp.extra_body)
+            .and_then(|s| serde_json::from_str(s).ok());
+        (llm_config, api_key, endpoint, model, extra_body)
+    };
 
     let effective_batch_size = if batch_size == 0 { 15 } else { batch_size };
 
@@ -549,6 +509,7 @@ async fn batch_translate_cues(
     for (batch_idx, chunk) in cues.chunks(effective_batch_size).enumerate() {
         match llm_repair::translate_cues_batch(
             chunk,
+            mode,
             &api_key,
             &endpoint,
             &model,
@@ -574,6 +535,8 @@ async fn batch_translate_cues(
                             batch_idx + 1,
                             e
                         )),
+                        review_status: None,
+                        review_comment: None,
                     });
                 }
             }
@@ -615,11 +578,12 @@ fn save_repaired_srt(
         })
         .collect();
 
-    // Use provided output directory, or default to home
+    // Use provided output directory, or default to workspace
     let output_path = if let Some(ref dir) = output_dir {
         output::determine_output_path_llm_in_dir(&translated_file_name, dir)
     } else {
-        output::determine_output_path_llm(&translated_file_name)
+        let wd = output::default_work_dir();
+        output::determine_output_path_llm(&translated_file_name, &wd)
     };
     let srt_content = output::generate_srt(&merged);
 
@@ -636,8 +600,72 @@ fn predict_llm_output_path(translated_file_name: String, output_dir: Option<Stri
     if let Some(dir) = output_dir {
         output::determine_output_path_llm_in_dir(&translated_file_name, &dir)
     } else {
-        output::determine_output_path_llm(&translated_file_name)
+        let wd = output::default_work_dir();
+        output::determine_output_path_llm(&translated_file_name, &wd)
     }
+}
+
+/// Get the current workspace directory path (resolved, with default fallback).
+#[tauri::command]
+fn get_work_dir(state: State<'_, Mutex<ConfigManager>>) -> String {
+    let mgr = state.lock().unwrap();
+    output::resolve_work_dir(mgr.work_dir()).to_string_lossy().to_string()
+}
+
+/// Set the workspace directory and persist it.
+/// Creates the directory (and subdirectories) if they don't exist.
+#[tauri::command]
+fn set_work_dir(dir: String, state: State<'_, Mutex<ConfigManager>>) -> Result<(), String> {
+    let p = std::path::Path::new(&dir);
+    if !p.is_absolute() {
+        return Err("作業フォルダは絶対パスで指定してください。".to_string());
+    }
+    // Create the directory and essential subdirectories
+    std::fs::create_dir_all(p.join("outputs"))
+        .map_err(|e| format!("作業フォルダを作成できません: {}", e))?;
+    std::fs::create_dir_all(p.join("logs"))
+        .map_err(|e| format!("logsサブフォルダを作成できません: {}", e))?;
+    std::fs::create_dir_all(p.join("work"))
+        .map_err(|e| format!("workサブフォルダを作成できません: {}", e))?;
+    state.lock().unwrap().set_work_dir(&dir)
+}
+
+/// Reset the workspace directory to the default (Documents\SRTRepair).
+/// Returns the new default path.
+#[tauri::command]
+fn reset_work_dir(state: State<'_, Mutex<ConfigManager>>) -> Result<String, String> {
+    state.lock().unwrap().reset_work_dir()?;
+    Ok(output::default_work_dir().to_string_lossy().to_string())
+}
+
+/// Open the workspace directory in the OS file explorer.
+#[tauri::command]
+fn open_work_dir(state: State<'_, Mutex<ConfigManager>>) -> Result<(), String> {
+    let mgr = state.lock().unwrap();
+    let dir = output::resolve_work_dir(mgr.work_dir());
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir.to_string_lossy().to_string())
+            .spawn()
+            .map_err(|e| format!("Failed to open work dir: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir.to_string_lossy().to_string())
+            .spawn()
+            .map_err(|e| format!("Failed to open work dir: {}", e))?;
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(dir.to_string_lossy().to_string())
+            .spawn()
+            .map_err(|e| format!("Failed to open work dir: {}", e))?;
+    }
+    Ok(())
 }
 
 /// Open a file with the OS default application.
@@ -704,11 +732,42 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Save the review action log to a JSON file in the logs folder.
+#[tauri::command]
+fn save_review_log(
+    log_entries: Vec<ReviewLogEntry>,
+    translated_file_name: String,
+    work_dir: Option<String>,
+) -> Result<String, String> {
+    let wd = work_dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(output::default_work_dir);
+    let path = output::determine_review_log_path(&translated_file_name, &wd);
+    let json = serde_json::to_string_pretty(&log_entries)
+        .map_err(|e| format!("JSON serialization failed: {}", e))?;
+    std::fs::write(&path, &json)
+        .map_err(|e| format!("Failed to write review log: {}", e))?;
+    Ok(path)
+}
+
+/// Persist the last-opened settings tab for next app launch.
+#[tauri::command]
+fn set_last_settings_tab(tab: String, state: State<'_, Mutex<ConfigManager>>) -> Result<(), String> {
+    state.lock().unwrap().set_last_settings_tab(&tab)
+}
+
+/// Get the last-opened settings tab ("ai" or "workdir").
+#[tauri::command]
+fn get_last_settings_tab(state: State<'_, Mutex<ConfigManager>>) -> String {
+    state.lock().unwrap().last_settings_tab().to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(Mutex::new(ConfigManager::load().expect("Failed to load config")))
         .invoke_handler(tauri::generate_handler![
             repair_and_save_srt,
             get_llm_config,
@@ -719,9 +778,16 @@ pub fn run() {
             batch_translate_cues,
             save_repaired_srt,
             predict_llm_output_path,
+            get_work_dir,
+            set_work_dir,
+            reset_work_dir,
+            open_work_dir,
             open_file,
             open_folder,
             copy_to_clipboard,
+            save_review_log,
+            set_last_settings_tab,
+            get_last_settings_tab,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

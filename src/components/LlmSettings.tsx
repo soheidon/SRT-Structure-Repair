@@ -144,6 +144,9 @@ export default function LlmSettings({
         model: "",
         api_key_env: "",
         configured: false,
+        last_successful_provider: "",
+        last_successful_model: "",
+        connection_verified_at: "",
       });
       setMessage("設定を削除しました。");
     } catch (e) {

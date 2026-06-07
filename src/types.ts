@@ -4,6 +4,9 @@ export interface LlmConfig {
   model: string;
   api_key_env: string;   // env var name, e.g. "OPENAI_API_KEY"
   configured: boolean;
+  last_successful_provider: string;
+  last_successful_model: string;
+  connection_verified_at: string;  // ISO 8601, empty if never verified
 }
 
 export interface LlmProviderInfo {
@@ -80,7 +83,7 @@ export interface BatchRepairCue {
 /** User's accept/reject decision on a batch translation candidate. */
 export type BatchCueStatus = "Pending" | "Accepted" | "Rejected";
 
-/** Result from batch LLM translation of a single cue. */
+/** Result from batch LLM translation/review of a single cue. */
 export interface BatchRepairResult {
   id: number;
   source_text: string;
@@ -89,7 +92,14 @@ export interface BatchRepairResult {
   confidence: number;
   status: BatchCueStatus;
   error?: string;
+  /** Review mode: assessment status */
+  review_status?: string;
+  /** Review mode: reviewer's comment */
+  review_comment?: string;
 }
+
+/** AI operation mode for batch translation/review. */
+export type AiMode = "retranslate" | "supplement_untranslated" | "review";
 
 // ── Review Panel types ────────────────────────────────────────────────────
 
@@ -100,10 +110,13 @@ export type ReviewCueStatus =
   | "candidate"        // Has AI candidate, not yet decided
   | "ai_individual_repaired"  // Individual AI retry succeeded
   | "ai_batch_repaired"       // Batch AI repair populated a candidate
+  | "ai_reviewed"             // Reviewed by AI (review mode)
+  | "ai_retranslated"         // Retranslated by AI (retranslate mode)
   | "candidate_edited" // User edited the AI candidate manually
   | "accepted"         // User accepted this cue's translation
   | "rejected"         // User explicitly rejected
-  | "empty"            // Source text is empty — cannot be repaired
+  | "empty"            // Source text is empty, translation also empty
+  | "source_empty_target_exists"  // Source empty but Japanese translation exists
   | "error";           // LLM API call failed for this cue
 
 /** Unified cue representation for the review panel table + detail pane. */
@@ -122,5 +135,15 @@ export interface ReviewCue {
   userEdited: boolean;
   note: string;                 // backend notes (e.g. "No matching translation text found")
   error: string;                // LLM error message
+  reviewComment: string;        // AI review comment (review mode)
   isAiRepairable: boolean;      // has source text AND (no translation OR LLM failed)
+}
+
+/** Review action log entry for save-to-file audit trail. */
+export interface ReviewLogEntry {
+  timestamp: string;   // ISO 8601
+  action: string;      // "accept_cues", "reject_cues", "save_srt", etc.
+  cueIds?: number[];
+  count?: number;
+  message?: string;
 }

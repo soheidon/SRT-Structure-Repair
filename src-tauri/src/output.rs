@@ -1,6 +1,39 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::types::{RepairLogEntry, RepairedCue};
+
+/// Default workspace directory when none is configured.
+/// Returns `%USERPROFILE%\Documents\SRTRepair` (Windows) or `~/Documents/SRTRepair`.
+pub(crate) fn default_work_dir() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    Path::new(&home).join("Documents").join("SRTRepair")
+}
+
+/// Resolve the workspace directory from a config value.
+/// If `config_work_dir` is Some and an absolute path, use it.
+/// Otherwise fall back to `default_work_dir()`.
+pub(crate) fn resolve_work_dir(config_work_dir: Option<&str>) -> PathBuf {
+    match config_work_dir {
+        Some(dir) if !dir.is_empty() => {
+            let p = Path::new(dir);
+            if p.is_absolute() {
+                return p.to_path_buf();
+            }
+        }
+        _ => {}
+    }
+    default_work_dir()
+}
+
+/// Resolve a workspace subdirectory, creating it if it doesn't exist.
+/// e.g. resolve_work_subdir("outputs", work_dir) → {work_dir}/outputs/
+fn resolve_work_subdir(subdir: &str, work_dir: &Path) -> PathBuf {
+    let path = work_dir.join(subdir);
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
 
 /// Generate an SRT file string from repaired cues.
 /// Output format: UTF-8 no BOM, CRLF line endings.
@@ -23,21 +56,10 @@ pub fn generate_srt(cues: &[RepairedCue]) -> String {
 
 /// Determine the output file path based on the translated SRT file name.
 ///
-/// Given `episode01.ja.srt`, produces `{home}/episode01.ja-Repaired.srt`.
+/// Given `episode01.ja.srt`, produces `{work_dir}/outputs/episode01.ja-Repaired.srt`.
 /// If that file exists, tries `episode01.ja-Repaired-2.srt`, `-3`, etc.
-///
-/// Output directory defaults to the user's home directory so the user can
-/// easily find the result.
-pub fn determine_output_path(translated_file_name: &str) -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-
-    let parent = if home.is_empty() {
-        Path::new(".")
-    } else {
-        Path::new(&home)
-    };
+pub fn determine_output_path(translated_file_name: &str, work_dir: &Path) -> String {
+    let parent = resolve_work_subdir("outputs", work_dir);
 
     let name_path = Path::new(translated_file_name);
     let stem = name_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -72,17 +94,9 @@ pub fn determine_output_path(translated_file_name: &str) -> String {
 
 /// Determine the log file path based on the translated SRT file name.
 ///
-/// Given `episode01.ja.srt`, produces `{home}/episode01.ja-Repaired.log`.
-pub fn determine_log_path(translated_file_name: &str) -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-
-    let parent = if home.is_empty() {
-        Path::new(".")
-    } else {
-        Path::new(&home)
-    };
+/// Given `episode01.ja.srt`, produces `{work_dir}/logs/episode01.ja-Repaired.log`.
+pub fn determine_log_path(translated_file_name: &str, work_dir: &Path) -> String {
+    let parent = resolve_work_subdir("logs", work_dir);
 
     let name_path = Path::new(translated_file_name);
     let stem = name_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -91,9 +105,22 @@ pub fn determine_log_path(translated_file_name: &str) -> String {
     parent.join(&log_name).to_string_lossy().to_string()
 }
 
-/// Determine the output path for LLM-repaired SRT with `_Repaired_after_llm` suffix.
+/// Determine the review actions log path based on the translated SRT file name.
 ///
-/// Given `episode01.ja.srt`, produces `{home}/episode01.ja-Repaired_after_llm.srt`.
+/// Given `episode01.ja.srt`, produces `{work_dir}/logs/episode01.ja-review-actions.json`.
+pub fn determine_review_log_path(translated_file_name: &str, work_dir: &Path) -> String {
+    let parent = resolve_work_subdir("logs", work_dir);
+
+    let name_path = Path::new(translated_file_name);
+    let stem = name_path.file_stem().unwrap_or_default().to_string_lossy();
+
+    let log_name = format!("{}-review-actions.json", stem);
+    parent.join(&log_name).to_string_lossy().to_string()
+}
+
+/// Determine the output path for LLM-repaired SRT in an explicit directory.
+///
+/// Given `episode01.ja.srt`, produces `{output_dir}/episode01.ja-Repaired_after_llm.srt`.
 /// If that file exists, tries `episode01.ja-Repaired_after_llm-2.srt`, `-3`, etc.
 ///
 /// If `output_dir` is provided, uses that directory instead of the user's home.
@@ -130,19 +157,10 @@ pub fn determine_output_path_llm_in_dir(translated_file_name: &str, output_dir: 
     candidate.to_string_lossy().to_string()
 }
 
-/// Determine the output path for LLM-repaired SRT, defaulting to the user's home directory.
-pub fn determine_output_path_llm(translated_file_name: &str) -> String {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-
-    let parent = if home.is_empty() {
-        ".".to_string()
-    } else {
-        home
-    };
-
-    determine_output_path_llm_in_dir(translated_file_name, &parent)
+/// Determine the output path for LLM-repaired SRT, defaulting to the workspace outputs folder.
+pub fn determine_output_path_llm(translated_file_name: &str, work_dir: &Path) -> String {
+    let parent = resolve_work_subdir("outputs", work_dir);
+    determine_output_path_llm_in_dir(translated_file_name, &parent.to_string_lossy())
 }
 
 /// Generate a plain-text repair log.
@@ -272,7 +290,7 @@ mod tests {
 
     #[test]
     fn output_path_basic() {
-        let path = determine_output_path("episode01.ja.srt");
+        let path = determine_output_path("episode01.ja.srt", &default_work_dir());
         assert!(path.contains("episode01.ja-Repaired.srt"));
     }
 }

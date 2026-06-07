@@ -101,6 +101,18 @@ pub struct BatchRepairCue {
     pub context_after: String,
 }
 
+/// Operation mode for batch LLM translate/review.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchTranslateMode {
+    /// Produce a fresh Japanese translation from the English source.
+    Retranslate,
+    /// Fill in only missing translations (skip cues that already have one).
+    SupplementUntranslated,
+    /// Review existing translations for quality, suggest fixes.
+    Review,
+}
+
 /// Result from batch LLM translation of a single cue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchRepairResult {
@@ -111,6 +123,10 @@ pub struct BatchRepairResult {
     pub confidence: f64,
     pub status: BatchCueStatus,
     pub error: Option<String>,
+    /// Review mode: assessment status (e.g. "ok", "needs_fix", "issue_found")
+    pub review_status: Option<String>,
+    /// Review mode: reviewer's comment about the translation quality
+    pub review_comment: Option<String>,
 }
 
 /// User's accept/reject decision on a batch translation candidate.
@@ -156,6 +172,12 @@ pub struct LlmConfig {
     pub api_key_env: String,
     /// Whether the referenced env var actually contains a value
     pub configured: bool,
+    /// Last provider that had a successful connection test
+    pub last_successful_provider: String,
+    /// Last model that had a successful connection test
+    pub last_successful_model: String,
+    /// ISO 8601 timestamp of last successful connection test (empty if never)
+    pub connection_verified_at: String,
 }
 
 /// Describes a known LLM provider for the frontend provider selector.
@@ -236,6 +258,19 @@ pub(crate) const KNOWN_PROVIDERS: &[KnownProvider] = &[
         extra_body: Some(r#"{"thinking": {"type": "enabled"}}"#),
     },
 ];
+
+/// Review action log entry for save-to-file audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewLogEntry {
+    pub timestamp: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cue_ids: Option<Vec<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
 
 /// Errors that can occur during SRT parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]

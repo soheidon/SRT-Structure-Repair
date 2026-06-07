@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   RepairSummary,
@@ -10,9 +10,9 @@ import {
 import FileSelector from "./components/FileSelector";
 import RepairControls from "./components/RepairControls";
 import RepairSummaryView from "./components/RepairSummary";
-import LlmSettings from "./components/LlmSettings";
 import RepairLogWindow from "./components/RepairLogWindow";
 import ReviewPanel from "./components/ReviewPanel";
+import SettingsDialog from "./components/SettingsDialog";
 
 /** Parse "HH:MM:SS,mmm" to ms */
 function parseTimestamp(ts: string): number {
@@ -63,41 +63,17 @@ export default function App() {
   const [isRepairing, setIsRepairing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
-  const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"ai" | "workdir">("ai");
   const [showLogWindow, setShowLogWindow] = useState(false);
+  const [workDir, setWorkDir] = useState<string>("");
 
-  // ── AI connection tracking (tied to provider/model) ──────────────────
-  const lastProviderRef = useRef<string>("");
-  const lastModelRef = useRef<string>("");
-  const connectionOkRef = useRef(false);
-
+  // ── AI connection tracking (from persisted config) ────────────────────
   const aiConnectionOk =
     llmConfig != null &&
-    connectionOkRef.current &&
-    lastProviderRef.current === llmConfig.provider &&
-    lastModelRef.current === llmConfig.model;
-
-  // Reset connection state when provider/model change
-  useEffect(() => {
-    if (llmConfig) {
-      if (
-        lastProviderRef.current !== llmConfig.provider ||
-        lastModelRef.current !== llmConfig.model
-      ) {
-        lastProviderRef.current = llmConfig.provider;
-        lastModelRef.current = llmConfig.model;
-        connectionOkRef.current = false;
-      }
-    }
-  }, [llmConfig?.provider, llmConfig?.model]);
-
-  const markAiSuccess = useCallback(() => {
-    if (llmConfig) {
-      lastProviderRef.current = llmConfig.provider;
-      lastModelRef.current = llmConfig.model;
-      connectionOkRef.current = true;
-    }
-  }, [llmConfig]);
+    llmConfig.last_successful_provider === llmConfig.provider &&
+    llmConfig.last_successful_model === llmConfig.model &&
+    llmConfig.connection_verified_at !== "";
 
   // ── Debug log ────────────────────────────────────────────────────────
   const [debugLog, setDebugLog] = useState<string[]>([]);
@@ -110,6 +86,10 @@ export default function App() {
   // ── LLM config ───────────────────────────────────────────────────────
   useEffect(() => {
     invoke<LlmConfig>("get_llm_config").then(setLlmConfig);
+    invoke<string>("get_work_dir").then(setWorkDir);
+    invoke<string>("get_last_settings_tab").then((tab) => {
+      if (tab === "ai" || tab === "workdir") setSettingsTab(tab as "ai" | "workdir");
+    }).catch(() => {});
   }, []);
 
   const handleConfigChanged = useCallback((config: LlmConfig) => {
@@ -134,12 +114,19 @@ export default function App() {
     if (!summary) return [];
     return summary.repaired_cues.map((cue) => {
       const hasSource = !!cue.source_text;
+      const hasTranslation = !!cue.translated_text;
       const noTranslation = !cue.translated_text;
       const llmFailed =
         cue.notes?.startsWith("AI repair failed") ||
         cue.notes?.startsWith("LLM repair failed");
 
-      const { status, selected } = mapInitialStatus(cue.status, cue.source_text, cue.notes);
+      let { status, selected } = mapInitialStatus(cue.status, cue.source_text, cue.notes);
+
+      // Source is empty but Japanese translation exists — needs review
+      if (!hasSource && hasTranslation && status !== "error") {
+        status = "source_empty_target_exists";
+        selected = false;
+      }
 
       return {
         id: cue.id,
@@ -156,6 +143,7 @@ export default function App() {
         userEdited: false,
         note: cue.notes ?? "",
         error: llmFailed ? (cue.notes ?? "") : "",
+        reviewComment: "",
         isAiRepairable: hasSource && (noTranslation || llmFailed === true),
       };
     });
@@ -186,20 +174,27 @@ export default function App() {
               元の英語SRTを正本として、DeepL翻訳後の崩れたSRT字幕ファイルを修復します
             </p>
           </div>
-          <button
-            className="settings-toggle header-settings-btn"
-            onClick={() => setShowLlmSettings(true)}
-            title="AIの設定"
-          >
-            ⚙ AIの設定
-          </button>
+          <div className="header-actions">
+            <button
+              className="settings-toggle"
+              onClick={() => {
+                setSettingsTab("ai");
+                setShowSettings(true);
+              }}
+              title="設定"
+            >
+              ⚙ 設定
+            </button>
+          </div>
         </div>
       </header>
 
-      <LlmSettings
-        isOpen={showLlmSettings}
-        onClose={() => setShowLlmSettings(false)}
+      <SettingsDialog
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        initialTab={settingsTab}
         onConfigChanged={handleConfigChanged}
+        onWorkDirChanged={setWorkDir}
       />
 
       <main className="app-main">
@@ -247,7 +242,10 @@ export default function App() {
           llmConfigured={llmConfigured}
           llmConfig={llmConfig}
           providerName={providerName}
-          onOpenSettings={() => setShowLlmSettings(true)}
+          onOpenSettings={() => {
+            setSettingsTab("ai");
+            setShowSettings(true);
+          }}
           onRepairStart={() => {
             setIsRepairing(true);
             setError(null);
@@ -302,8 +300,13 @@ export default function App() {
                 llmConfigured={llmConfigured}
                 aiConnectionOk={aiConnectionOk}
                 translatedFileName={translatedFileName}
+                workDir={workDir}
                 onSave={handleBatchSave}
-                onConnectionSuccess={markAiSuccess}
+                onConnectionSuccess={() => {}} // connection tracked by backend now
+                onOpenSettings={(tab) => {
+                  setSettingsTab(tab);
+                  setShowSettings(true);
+                }}
               />
             )}
           </>
