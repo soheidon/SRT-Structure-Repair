@@ -643,7 +643,7 @@ export default function ReviewPanel({
       {/* ═══════════════ Zone 1: Top Bar ═══════════════ */}
       <div className="review-topbar">
         <div className="review-counts">
-          <span className="count-chip">確認が必要: {counts.total}件</span>
+          <span className="count-chip">全字幕: {counts.total}件</span>
           <span className="count-chip count-ai">AI補完対象: {counts.aiEligible}件</span>
           {counts.emptySource > 0 && (
             <span className="count-chip count-empty">空字幕: {counts.emptySource}件</span>

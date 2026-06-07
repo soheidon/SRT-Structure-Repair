@@ -41,13 +41,15 @@ function mapInitialStatus(
   status: string,
   sourceText: string,
   notes?: string,
-): ReviewCueStatus {
-  if (!sourceText) return "empty";
+): { status: ReviewCueStatus; selected: boolean } {
+  if (!sourceText) return { status: "empty", selected: false };
   if (notes?.startsWith("AI repair failed") || notes?.startsWith("LLM repair failed"))
-    return "error";
-  if (status === "Unmatched") return "unreviewed";
-  if (status === "NeedsReview") return "needs_review";
-  return "needs_review";
+    return { status: "error", selected: false };
+  if (status === "AutoMatched" || status === "StructureRecovered" || status === "LLMRepaired")
+    return { status: "accepted", selected: true };
+  if (status === "Unmatched") return { status: "unreviewed", selected: false };
+  if (status === "NeedsReview") return { status: "needs_review", selected: false };
+  return { status: "needs_review", selected: false };
 }
 
 export default function App() {
@@ -127,15 +129,17 @@ export default function App() {
     ? (PROVIDER_NAMES[llmConfig.provider] ?? llmConfig.provider)
     : "";
 
-  // ── Derive ReviewCue[] from summary ──────────────────────────────────
+  // ── Derive ReviewCue[] from all repaired cues ────────────────────────
   const reviewCues: ReviewCue[] = useMemo(() => {
     if (!summary) return [];
-    return summary.needs_review_cues.map((cue) => {
+    return summary.repaired_cues.map((cue) => {
       const hasSource = !!cue.source_text;
       const noTranslation = !cue.translated_text;
       const llmFailed =
         cue.notes?.startsWith("AI repair failed") ||
         cue.notes?.startsWith("LLM repair failed");
+
+      const { status, selected } = mapInitialStatus(cue.status, cue.source_text, cue.notes);
 
       return {
         id: cue.id,
@@ -147,8 +151,8 @@ export default function App() {
         aiTranslation: "",
         editedTranslation: "",
         confidence: cue.confidence > 0 && cue.confidence < 1 ? cue.confidence : 0,
-        status: mapInitialStatus(cue.status, cue.source_text, cue.notes),
-        selected: false,
+        status,
+        selected,
         userEdited: false,
         note: cue.notes ?? "",
         error: llmFailed ? (cue.notes ?? "") : "",
@@ -290,7 +294,7 @@ export default function App() {
               summary={summary}
               onOpenLog={() => setShowLogWindow(true)}
             />
-            {summary.needs_review > 0 && (
+            {summary.repaired_cues.length > 0 && (
               <ReviewPanel
                 initialCues={reviewCues}
                 repairedCues={summary.repaired_cues}
